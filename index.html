@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta charset="utf-8">
+		<title>nbody gravity simulation</title>
+		<style>
+			body { margin: 0; }
+			.info {
+				position: absolute;
+				top: 10px;
+				width: 100%;
+				color: white;
+				z-index: 100;
+				display:block;
+			}
+			p {
+				font-family: 'Courier New', monospace;
+			}
+		</style>
+	</head>
+	<body>
+		<div class="info">
+			<p id="physics">Physics time</p>
+			<p id="average">Average physics time</p>
+			<p id="graphics">Graphics time</p>
+			<p id="step">Time step</p>
+			<p id="time">Simulation time</p>
+			<button id="camZ" onclick="moveCam('top')">Overhead view</button>
+			<button id="camY" onclick="moveCam('side')">Side view</button>
+		</div>
+		<script src="js/p5.min.js"></script>
+		<script src="js/three.js"></script>
+		<script type="text/javascript" src="http://ajax.googleapis.com/ajax/libs/jquery/1.6.2/jquery.min.js"></script>
+		<script src="https://unpkg.com/@seregpie/three.text-texture"></script>
+		<script src="https://unpkg.com/@seregpie/three.text-sprite"></script>
+		<script src="js/nbody.js"></script>
+	</body>
+</html>
