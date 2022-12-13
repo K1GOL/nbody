@@ -23,27 +23,54 @@ const earthMass = 5.972e24;
 const jupiterMass = 1.898e27;
 const sunMass = 1.989e30;
 /* eslint-enable */
-// Simulation constants
+// Simulation variables
 //
-// Every physics update will simulate this many seconds
-// Note: the way the physics are calculated leads to inaccurate results
-// when the time step is high
-let targetTimeStep = 3.5 * minute;
-// Try to calculate physics every this many milliseconds
-const updateInterval = 0;
+// Desired simulation rate (times real speed)
+let targetSpeed = 15000;
 // Gravitational constant (Nm^2/kg^2)
-const gamma = 6.67430e-11;
+const gamma = 6.67430e-11
+// Minimum force limit for physics (N). If body interaction results in less force than this limit, it will be ignored
+const minForce = 0.1;
 // Camera distance (with dynamic zoom becomes default value)
-let camDistance = 5e8;
+let camDistance = 2.7e9;
 // Set true to fit all objects in camera fov
 let dynamicZoom = true;
 // Camera FOV
 const cameraFov = 75;
 // How many trajectory segments to keep before removing the oldest one
-const maxSegments = 1000;
+const maxSegments = 200;
+// Minimum length for a trajectory segment.
+const minSegmentLength = 1.75 * earthRadius;
 // Target graphics frame rate
 // Lower values increase performance
-const frameRate = 24;
+let frameRate = 60;
+// Maximum fps that will not be exceeded even with extra performance available.
+const maxFrameRate = 100;
+// Track how many physics iterations could be performed in 1 ms to calculate average physics calculation time.
+let physicsIterations = 0;
+// Store a list of all bodies
+const allBodies = {};
+// Store timestamp of last physics update
+let physicsStart = window.performance.now();
+// Store elapsed physics updates
+let timeElapsed = 0;
+// Track average performance
+const frameTimes = [0];
+// Track time in ms it takes to complete physics calculations.
+let physicsTime = 0.01;
+// Track time step in seconds
+let timeStep = 1;
+// Start slowing down simulation speed when a body is going over this speed (m/s)
+const speedLimit = 4000;
+// Maximum slow down will be achieved when a body moves at this speed (m/s)
+const speedLimitCap = 20000;
+// Track speed of fastest moving body, based on which speed reduction will be applied (m/s)
+let fastestSpeed = 0;
+// Speed reduction will be capped to this factor.
+const maxSlowDown = 5/6;
+// Animation functions that will be called on repaint will be placed here.
+const animationCallbackQueue = [];
+
 
 function init (createDefautltBodies) {
   // Create bodies
@@ -53,42 +80,67 @@ function init (createDefautltBodies) {
   // Default body creation
   // -----
   if (createDefautltBodies) {
-    // Earth, The Moon, and a small satellite in lunar orbit
+    // Jupiter and Galilean moons.
     //
-    // Earth
+    // Jupiter
     createNewBody({
-      size: 6371000,
-      mass: 5.972e24,
+      size: jupiterRadius,
+      mass: jupiterMass,
       positionX: 0,
       positionY: 0,
       positionZ: 0,
-      frozen: false,
-      name: 'Earth'
+      color: 0xd07c37,
+      frozen: true,
+      name: 'Jupiter'
     });
-    // Moon
+    // Io
     createNewBody({
-      size: 1737100,
-      mass: 7.34767309e22,
-      positionX: -385000000,
-      positionY: 0,
-      positionZ: 0,
-      color: 0xa3a3a3,
-      velocityX: 0,
-      velocityY: 1000,
-      velocityZ: 0,
-      name: 'Moon'
+      size: 1821.6 * kilometer,
+      mass: 8.931938e22,
+      positionY: jupiterRadius + 421700 * kilometer,
+      velocityX: -15634,
+      color: 0xf0e397,
+      frozen: false,
+      name: 'Io'
+    });
+    // Europa
+    createNewBody({
+      size: 1560.8 * kilometer,
+      mass: 4.799844e22,
+      positionY: -jupiterRadius - 670900 * kilometer,
+      velocityX: 13143.36,
+      color: 0xe7e7e7,
+      frozen: false,
+      name: 'Europa'
+    });
+    // Ganymede
+    createNewBody({
+      size: 2634.1 * kilometer,
+      mass: 1.4819e23,
+      positionY: jupiterRadius + 1070400 * kilometer,
+      velocityX: -10880,
+      color: 0xbababa,
+      frozen: false,
+      name: 'Ganymede'
+    });
+    // Callisto
+    createNewBody({
+      size: 2410.3 * kilometer,
+      mass: 1.075938e23,
+      positionY: jupiterRadius + 1882700 * kilometer,
+      velocityX: -8204,
+      color: 0x797979,
+      frozen: false,
+      name: 'Callisto'
     });
     // Spacecraft
     createNewBody({
-      size: 10,
-      mass: 700,
-      positionY: -earthRadius - (800 * kilometer),
-      positionX: 0,
-      positionZ: 0,
-      color: 0xffffff,
-      velocityX: -10417,
-      velocityY: -500,
-      velocityZ: 200,
+      size: 3,
+      mass: 100,
+      positionY: -jupiterRadius - 670900 * kilometer - 600 * kilometer,
+      velocityX: 12140,
+      color: 0xe7e7e7,
+      frozen: false,
       name: 'Spacecraft'
     });
   }
@@ -100,26 +152,45 @@ function init (createDefautltBodies) {
   physicsUpdate();
 }
 
-// Store a list of all bodies
-const allBodies = {};
-
-// Store timestamp of last physics update
-let lastUpdate = Date.now();
-
-// Store elapsed physics updates
-let timeElapsed = 0;
-
-// Track average performance
-const frameTimes = [0];
-
-// Track time step
-let timeStep = targetTimeStep;
-
 // -----
 // Utility
 // -----
 
 const average = (array) => array.reduce((a, b) => a + b) / array.length;
+
+function parseUnits (input) {
+  // Replaces units such as 'jupiterMass' or 'earthRadius' with numbers.
+  const units = {
+    minute,
+    hour,
+    day,
+    // Distance
+    kilometer,
+    earthRadius,
+    moonRadius,
+    jupiterRadius,
+    sunRadius,
+    astronomicalUnit,
+    // Mass
+    moonMass,
+    earthMass,
+    jupiterMass,
+    sunMass
+  }
+
+  let split = input.split(' ')
+  for (let i = 0; i < split.length; i++) {
+    if (units[split[i]]) split[i] = units[split[i]]
+    else {
+      split[i] = Number(split[i]);
+      if (split[i].toString() === NaN.toString()) {
+        split[i] = 1;
+        alert('Failed to parse value!')
+      }
+    }
+  }
+  return split.reduce((a, b) => a * b)
+}
 
 // -----
 // Physics
@@ -144,15 +215,15 @@ function setDistance () { // eslint-disable-line
 
 function promptNewBody () { // eslint-disable-line
   // Lets user add a new body at runtime
-  const size = Number(prompt('Radius (meters)', moonRadius)); // eslint-disable-line
-  const positionX = Number(prompt('Position X (meters, relative to center)', 385000000)); // eslint-disable-line
-  const positionY = Number(prompt('Position Y (meters, relative to center)', 0)); // eslint-disable-line
-  const positionZ = Number(prompt('Position Z (meters, relative to center)', 0)); // eslint-disable-line
-  const color = Number(prompt('Color (hex)', '0xa3a3a3')); // eslint-disable-line
-  const mass = Number(prompt('Mass (kilograms)', moonMass)); // eslint-disable-line
-  const velocityX = Number(prompt('Velocity X (m/s)', 0)); // eslint-disable-line
-  const velocityY = Number(prompt('Velocity Y (m/s)', -1000)); // eslint-disable-line
-  const velocityZ = Number(prompt('Velocity Z (m/s)', 0)); // eslint-disable-line
+  const size = parseUnits(prompt('Radius (meters)', moonRadius)); // eslint-disable-line
+  const positionX = parseUnits(prompt('Position X (meters, relative to center)', 385000000)); // eslint-disable-line
+  const positionY = parseUnits(prompt('Position Y (meters, relative to center)', 0)); // eslint-disable-line
+  const positionZ = parseUnits(prompt('Position Z (meters, relative to center)', 0)); // eslint-disable-line
+  const color = parseUnits(prompt('Color (hex)', '0xa3a3a3')); // eslint-disable-line
+  const mass = parseUnits(prompt('Mass (kilograms)', moonMass)); // eslint-disable-line
+  const velocityX = parseUnits(prompt('Velocity X (m/s)', 0)); // eslint-disable-line
+  const velocityY = parseUnits(prompt('Velocity Y (m/s)', -1000)); // eslint-disable-line
+  const velocityZ = parseUnits(prompt('Velocity Z (m/s)', 0)); // eslint-disable-line
   let frozen = prompt('Frozen? (true/false)', 'false'); // eslint-disable-line
   const name = prompt('Name', `Body ${Object.keys(allBodies).length + 1}`); // eslint-disable-line
   if (frozen === 'true') {
@@ -174,8 +245,8 @@ function promptNewBody () { // eslint-disable-line
   });
 }
 
-function changeTimeStep () { // eslint-disable-line
-  targetTimeStep = Number(prompt('Time step (seconds)', timeStep)); // eslint-disable-line
+function changeSimulationSpeed () { // eslint-disable-line
+  targetSpeed = Number(prompt('Simulation speed multiplier.', targetSpeed)); // eslint-disable-line
 }
 
 function createNewBody ({
@@ -223,17 +294,21 @@ function createNewBody ({
   });
 }
 
-function physicsUpdate () {
+async function physicsUpdate () {
   // This function runs all physics calculations
   // Call gravity force calculations for each body,
   // then calculate new position and velocity
+  // Set time step to be time it takes to calculate physics times desired speed multiplier.
 
-  timeStep = targetTimeStep;
-  document.getElementById('step').innerHTML = `Time step is ${timeStep} s`;
-  for (const body in allBodies) {
+  // Calculate time step reduction due to fast bodies.
+  let speedFactor = 0;
+  if (fastestSpeed > speedLimit) speedFactor = (fastestSpeed - speedLimit) / (speedLimitCap - speedLimit) * maxSlowDown;
+  // Target average speed.
+  timeStep = average(frameTimes) / 1000 * targetSpeed * (1 - speedFactor);
+  function doPhysicsForBody (body) {
     // If body is frozen, skip physics
     if (allBodies[body].frozen) {
-      continue;
+      return;
     }
     const acceleration = calculateAcceleration(body);
     // Calculate new velocity components using formula
@@ -242,33 +317,59 @@ function physicsUpdate () {
     allBodies[body].velocityY = allBodies[body].velocityY + acceleration.y * timeStep;
     allBodies[body].velocityZ = allBodies[body].velocityZ + acceleration.z * timeStep;
 
+    // Update fastest body velocity.
+    const speed = new p5.Vector(allBodies[body].velocityX, allBodies[body].velocityY, allBodies[body].velocityZ).mag();
+    if (speed > fastestSpeed) fastestSpeed = speed;
+
     // Calculate new positions for body using formula
     // x = x_0 + v_0t + 1/2 at^2
     allBodies[body].positionX = allBodies[body].positionX + allBodies[body].velocityX * timeStep + (1 / 2) * acceleration.x * (timeStep ^ 2);
     allBodies[body].positionY = allBodies[body].positionY + allBodies[body].velocityY * timeStep + (1 / 2) * acceleration.y * (timeStep ^ 2);
     allBodies[body].positionZ = allBodies[body].positionZ + allBodies[body].velocityZ * timeStep + (1 / 2) * acceleration.z * (timeStep ^ 2);
-
-    // TODO: Check for collisions
     // Physics calculations complete for body
   }
+
+  // Process physics in parallel,
+  const promises = [];
+  for (const body in allBodies) {
+    const promise = new Promise((resolve) => {
+      doPhysicsForBody(body);
+      resolve();
+    })
+    promises.push(promise);
+  }
+  await Promise.all(promises);
+
   // All physics done
   // Display time taken to perform calculations
-  const physicsTime = Date.now() - lastUpdate;
-  frameTimes.push(physicsTime);
+  physicsIterations++;
+  const now = window.performance.now()
+  if (now > physicsStart) {
+    physicsTime = Math.min(250, (now - physicsStart) / physicsIterations);
+    frameTimes.push(physicsTime);
+    physicsIterations = 0;
+    physicsStart = now;
+  }
   document.getElementById('physics').innerHTML = `Physics took ${physicsTime} ms`;
-  document.getElementById('average').innerHTML = `Physics average time: ${average(frameTimes)} ms`;
+  document.getElementById('average').innerHTML = `Physics average time: ${average(frameTimes).toFixed(2)} ms`;
+  // Calculate speed multiplier.
+  let speed = Math.round(timeStep * 1000 / physicsTime)
+  // Format.
+  if (speed >= 1e9) speed = speed / 1e9 + 'B'
+  else if (speed >= 1e6 && speed < 1e9) speed = speed / 1e6 + 'M'
+  else if (speed >= 1e3 && speed < 1e6) speed = speed / 1e3 + 'K'
+  document.getElementById('step').innerHTML = `${speed} x real time speed.`;
   if (frameTimes > 3000) {
     frameTimes.shift();
   }
-  lastUpdate = Date.now();
 
   // Display total time elapsed
-  timeElapsed++;
-  const parsedTime = parseTime(timeElapsed * timeStep);
+  timeElapsed += timeStep;
+  const parsedTime = parseTime(timeElapsed);
   document.getElementById('time').innerHTML = `Simulated time elapsed: ${parsedTime.a} a ${parsedTime.d} d ${parsedTime.h} h ${parsedTime.m} m ${parsedTime.s} s`;
 
-  // Set timeout to call next update
-  setTimeout(function () { physicsUpdate(); }, updateInterval - physicsTime);
+  // Queue next physics update.
+  setTimeout(() => { physicsUpdate(); }, 1)
 }
 
 function calculateAcceleration (body) {
@@ -305,6 +406,10 @@ function calculateAcceleration (body) {
     // Calculate force using formula
     // F = gamma * (m_1 * m_2 / r^2)
     const totalForce = gamma * (allBodies[body].mass * allBodies[target].mass / distanceVector.magSq());
+    // Optimize by ignoring weak interactions.
+    if (totalForce < minForce) {
+      continue;
+    }
     // Check if body should be primary body
     if (totalForce > pbForce) {
       pb = target;
@@ -334,26 +439,13 @@ function calculateAcceleration (body) {
 function parseTime (input) {
   // Takes time input in seconds,
   // outputs appropriate format
-  const date = new Date(null);
+  const date = new Date(input * 1000);
   date.setSeconds(input);
-  const seconds = date.toISOString().substr(17, 2);
-  const minutes = date.toISOString().substr(14, 2);
-  let hours = date.toISOString().substr(11, 2);
-  let days = 0;
-  let years = 0;
-
-  if (hours > 23) {
-    days += Math.floor(hours / 24);
-    hours -= Math.floor(hours / 24) * 24;
-  }
-  if (days > 364) {
-    years += Math.floor(days / 365);
-    days -= Math.floor(days / 365) * 365;
-  }
-
-  // Make fixed length
-  days = ('000' + days).substr(-3);
-  years = ('000' + years).substr(-3);
+  const seconds = date.getSeconds()
+  const minutes = date.getMinutes()
+  const hours = date.getHours()
+  const years = Math.floor(date.getTime() / 31556926000)
+  const days = Math.floor(date.getTime() / 86400000) - years * 365
   return {
     s: seconds,
     m: minutes,
@@ -376,6 +468,9 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 document.body.appendChild(renderer.domElement);
 
 camera.position.set(0, 0, camDistance);
+
+// Call first animation frame.
+requestAnimationFrame(animator)
 
 // Init done
 
@@ -447,18 +542,27 @@ function createBodyGraphics ({
   }
 
   const animate = function () {
-    // Measure time spent on graphics
-    const graphicsTimer = Date.now();
-
-    // FPS limiter
-    setTimeout(function () { requestAnimationFrame(animate); }, 1000 / frameRate) // eslint-disable-line
-
     // Animation
     // Update position
     sphere.position.set(allBodies[name].positionX, allBodies[name].positionY, allBodies[name].positionZ);
     sprite.position.set(300 / (camera.position.z - allBodies[name].positionZ) * allBodies[name].positionX + 10, 300 / (camera.position.z - allBodies[name].positionZ) * allBodies[name].positionY + 10, camera.position.z - 300);
     // Draw trajectory if not frozen
     if (!allBodies[name].frozen) {
+      // Check that primary body is set.
+      if (!allBodies[name].primaryBody) allBodies[name].primaryBody = name;
+      // Calculate distance to primary body.
+      const delta = {
+        x: allBodies[allBodies[name].primaryBody].positionX - allBodies[name].positionX,
+        y: allBodies[allBodies[name].primaryBody].positionY - allBodies[name].positionY,
+        z: allBodies[allBodies[name].primaryBody].positionZ - allBodies[name].positionZ
+      };
+      const distanceVector = new p5.Vector(delta.x, delta.y, delta.z); // eslint-disable-line
+      // Check if segment is long enough.
+      const segmentLength = new p5.Vector(allBodies[name].positionX - lastpos.x, allBodies[name].positionY - lastpos.y, allBodies[name].positionZ - lastpos.z)
+      if (segmentLength.mag() < minSegmentLength) {
+        renderer.render(scene, camera);
+        return;
+      }
       const points = [];
       points.push(new THREE.Vector3(lastpos.x, lastpos.y, lastpos.z)); // eslint-disable-line
       points.push(new THREE.Vector3(allBodies[name].positionX, allBodies[name].positionY, allBodies[name].positionZ)); // eslint-disable-line
@@ -466,12 +570,7 @@ function createBodyGraphics ({
       let line;
 
       // Check if going over the escape velocity, use appropriate color
-      const delta = {
-        x: allBodies[allBodies[name].primaryBody].positionX - allBodies[name].positionX,
-        y: allBodies[allBodies[name].primaryBody].positionY - allBodies[name].positionY,
-        z: allBodies[allBodies[name].primaryBody].positionZ - allBodies[name].positionZ
-      };
-      const distanceVector = new p5.Vector(delta.x, delta.y, delta.z); // eslint-disable-line
+      
       if (new p5.Vector(allBodies[name].velocityX - allBodies[allBodies[name].primaryBody].velocityX, allBodies[name].velocityY - allBodies[allBodies[name].primaryBody].velocityY, allBodies[name].velocityZ - allBodies[allBodies[name].primaryBody].velocityZ).magSq() > (2 * gamma * allBodies[allBodies[name].primaryBody].mass / distanceVector.mag())) { // eslint-disable-line
         line = new THREE.Line(lineGeometry, escapeMaterial); // eslint-disable-line
       } else {
@@ -495,10 +594,31 @@ function createBodyGraphics ({
     }
 
     renderer.render(scene, camera);
-    document.getElementById('graphics').innerHTML = `Graphics took ${Date.now() - graphicsTimer} ms`;
   };
 
-  animate();
+  animationCallbackQueue.push(animate);
+}
+
+async function animator () {
+  // This will call animation functions for each simulated body.
+  const graphicsTimer = window.performance.now()
+  const promises = [] // Array will store promises for animation functions so they can be done in parallel.
+  animationCallbackQueue.forEach(f => {
+    promises.push(new Promise((resolve) => {
+      f();
+      resolve();
+    }));
+  })
+  await Promise.all(promises)
+  const frameTime = window.performance.now() - graphicsTimer
+  const targetFrameTime = 1000 / frameRate;
+  const wait = Math.round(Math.max(0, targetFrameTime - frameTime))
+  document.getElementById('graphics').innerHTML = `FPS: ${Math.floor(1000 / (frameTime + wait))}. Graphics took ${frameTime} ms. (Idle for ${wait} ms.)`;
+  // Call next frame.
+  // Adjust frame target to reduce graphics load.
+  if (frameTime >= 1.5 * targetFrameTime) frameRate *= 0.75;
+  if (frameTime <= 0.5 * targetFrameTime) frameRate = Math.min(frameRate * 2, maxFrameRate);
+  setTimeout(() => { animator() }, wait)
 }
 
 if (confirm('Create default bodies?')) { // eslint-disable-line
